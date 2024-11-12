@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .my-button {
+    @apply bg-gray-300 hover:bg-gray-200 py-2 px-4 rounded mb-4 inline-block sm:w-auto;
+    white-space: nowrap;
+  }
+}
+
+@import '~flatpickr';

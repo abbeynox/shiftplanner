@@ -1,0 +1,77 @@
+---
+stages:
+  - build
+  - deploy
+
+build_yarn:
+  image: $CI_REGISTRY/immerda/container-images/yarn-gen:latest
+  tags:
+    - container
+  script:
+    - yarn -v
+    - yarn install
+    - yarn production
+    - tar cfz public.tar.gz public/{js,css}
+  artifacts:
+    paths:
+      - public.tar.gz
+    expire_in: 1 day
+  stage: build
+
+build_php:
+  parallel:
+    matrix:
+      - EL: "9"
+        PHP_VERSION:
+          - "8.2"
+  stage: build
+  image: $CI_REGISTRY/immerda/container-images/php/el$EL/devel:$PHP_VERSION
+  tags:
+    - container
+  script:
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - HASH="$(curl -s https://composer.github.io/installer.sig)"
+    - php -r "if (hash_file('SHA384', 'composer-setup.php') === '$HASH') { echo 'Installer verified'; } else { echo 'Installer corrupt'; unlink('composer-setup.php'); } echo PHP_EOL;"
+    - php composer-setup.php --install-dir=. --filename=composer
+    - php composer install
+    - tar cfz vendor-php${PHP_VERSION}-el${EL}.tar.gz vendor
+  artifacts:
+    paths:
+      - vendor-*.tar.gz
+    expire_in: 1 day
+
+deploy:
+  image: $CI_REGISTRY/immerda/container-images/amh:latest
+  dependencies: ["build_yarn","build_php"]
+  needs: ["build_yarn", "build_php"]
+  tags:
+    - container
+  script:
+    # Start SSH agent
+    - eval $(ssh-agent -s)
+    # Add the SSH key stored in the $DEPLOY_KEY variable to the agent store
+    # It is the base64 encoded private key
+    - echo "${DEPLOY_KEY}" | base64 -d | ssh-add - > /dev/null
+    - mkdir -p --mode=0700 ~/.ssh
+    - printf "${DEPLOY_HOST} ssh-ed25519 ${DEPLOY_HOST_ED_KEY}
+      " > ~/.ssh/known_hosts
+    - rm -rf vendor public/{css,js}
+    - tar fxz public.tar.gz
+    - tar fxz vendor-php${PHP_VERSION}-el${EL}.tar.gz
+    - rm -rf tests *.tar.gz
+    # clean cached stuff
+    - rm -rf storage/framework/*/* bootstrap/cache/*
+    # lftp needs a "dummy" password, even if key-based authentication is used.
+    - lftp -e "mirror -eRv -x ^.git/ -x storage/logs -x ^.env . www; quit;" -u $DEPLOY_USER,dummy sftp://$DEPLOY_HOST
+    - lftp -e "chmod -R 775 www/bootstrap/cache www/storage/framework" -u $DEPLOY_USER,dummy sftp://$DEPLOY_HOST
+    - tar czf published.tar.gz *
+  stage: deploy
+  only:
+    # This job relies on secret env vars, which are only available in our repo.
+    - main
+  variables:
+    EL: "9"
+    PHP_VERSION: "8.2"
+  artifacts:
+    paths:
+      - published.tar.gz
